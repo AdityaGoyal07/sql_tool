@@ -29,8 +29,7 @@ class DatabaseManager:
         """Establish connection to PostgreSQL database."""
         try:
             db = st.secrets["postgres"]
-            #st.write("DB CONFIG:", db)  # <--- Add this line for debugging
-            
+                        
             conn = psycopg2.connect(
                 host=db["host"],
                 port=db["port"],
