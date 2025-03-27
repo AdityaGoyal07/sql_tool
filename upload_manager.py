@@ -44,6 +44,7 @@ class UploadManager:
             last_run TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             credentials TEXT,
+            is_approved BOOLEAN DEFAULT 1,
             FOREIGN KEY (username) REFERENCES users(username)
         )
         ''')
@@ -101,7 +102,7 @@ class UploadManager:
                     # Process data
                     st.subheader("Data Processing")
                     
-                    # Handle missing values
+                    # Handle missing values with optimized code
                     missing_strategy = st.selectbox(
                         "How to handle missing values:",
                         ["Drop rows with any missing values", 
@@ -111,28 +112,79 @@ class UploadManager:
                         key=f"missing_{table_name}"
                     )
                     
-                    if missing_strategy == "Drop rows with any missing values":
-                        data = data.dropna()
-                        st.info(f"Dropped rows with missing values. New shape: {data.shape}")
-                    elif missing_strategy == "Fill numeric with 0, text with empty string":
-                        for col in data.columns:
-                            if data[col].dtype in ["float64", "int64"]:
-                                data[col] = data[col].fillna(0)
-                            else:
-                                data[col] = data[col].fillna("")
-                        st.info("Filled missing values with 0 or empty string.")
-                    elif missing_strategy == "Fill with mean/mode (where possible)":
-                        for col in data.columns:
-                            if data[col].dtype in ["float64", "int64"]:
-                                data[col] = data[col].fillna(data[col].mean())
-                            else:
-                                data[col] = data[col].fillna(data[col].mode()[0] if not data[col].mode().empty else "")
-                        st.info("Filled missing values with mean/mode.")
+                    # Show a progress bar for data processing
+                    progress_bar = st.progress(0)
+                    st.write("Processing data...")
                     
-                    # Convert mixed-type columns to string
-                    for col in data.columns:
-                        if data[col].dtype == "object":
-                            data[col] = data[col].astype(str)
+                    total_cols = len(data.columns)
+                    
+                    # Process the data based on selected strategy
+                    if missing_strategy == "Drop rows with any missing values":
+                        # This is already optimized as it uses vectorized operations
+                        data = data.dropna()
+                        progress_bar.progress(1.0)
+                        st.info(f"Dropped rows with missing values. New shape: {data.shape}")
+                    
+                    elif missing_strategy == "Fill numeric with 0, text with empty string":
+                        # Identify numeric and non-numeric columns first
+                        numeric_cols = data.select_dtypes(include=['number']).columns
+                        non_numeric_cols = data.select_dtypes(exclude=['number']).columns
+                        
+                        # Use vectorized operations instead of loops
+                        if len(numeric_cols) > 0:
+                            data[numeric_cols] = data[numeric_cols].fillna(0)
+                            progress_bar.progress(0.5)
+                        
+                        if len(non_numeric_cols) > 0:
+                            data[non_numeric_cols] = data[non_numeric_cols].fillna("")
+                            progress_bar.progress(1.0)
+                        else:
+                            progress_bar.progress(1.0)
+                            
+                        st.info("Filled missing values with 0 or empty string.")
+                    
+                    elif missing_strategy == "Fill with mean/mode (where possible)":
+                        # Identify numeric columns first
+                        numeric_cols = data.select_dtypes(include=['number']).columns
+                        non_numeric_cols = data.select_dtypes(exclude=['number']).columns
+                        
+                        # Process numeric columns with vectorized operations
+                        if len(numeric_cols) > 0:
+                            # Calculate means for all numeric columns at once
+                            means = data[numeric_cols].mean()
+                            for i, col in enumerate(numeric_cols):
+                                data[col] = data[col].fillna(means[col])
+                                progress_bar.progress((i + 1) / (len(numeric_cols) + len(non_numeric_cols)))
+                        
+                        # Process non-numeric columns
+                        if len(non_numeric_cols) > 0:
+                            # Pre-calculate modes for all non-numeric columns
+                            modes = {}
+                            for col in non_numeric_cols:
+                                mode_values = data[col].mode()
+                                modes[col] = mode_values[0] if not mode_values.empty else ""
+                            
+                            # Fill with modes
+                            for i, col in enumerate(non_numeric_cols):
+                                data[col] = data[col].fillna(modes[col])
+                                current_progress = (len(numeric_cols) + i + 1) / (len(numeric_cols) + len(non_numeric_cols))
+                                progress_bar.progress(min(current_progress, 1.0))
+                        
+                        # Ensure progress bar reaches 100%
+                        progress_bar.progress(1.0)
+                        st.info("Filled missing values with mean/mode.")
+                    else:
+                        # No processing needed for "Keep as is"
+                        progress_bar.progress(1.0)
+                    
+                    # Convert mixed-type columns to string - optimize this operation
+                    object_cols = data.select_dtypes(include=['object']).columns
+                    if len(object_cols) > 0:
+                        data[object_cols] = data[object_cols].astype(str)
+                    
+                    # Clear the progress bar
+                    time.sleep(0.5)  # Small delay to show completion
+                    progress_bar.empty()
                     
                     # Store data button
                     if st.button(f"Store Data in Database", key=f"store_{table_name}"):
@@ -167,50 +219,142 @@ class UploadManager:
     
     def render_scheduled_uploads(self):
         """Display interface for setting up scheduled data uploads."""
-        st.subheader("Schedule Automated Uploads")
+        st.subheader("Scheduled Automated Uploads")
         
-        # Check if user has admin role
-        if st.session_state.role != "admin":
-            st.warning("Scheduled uploads require admin permissions.")
-            return
+        # Check if the user is admin - if so, show the approval interface
+        is_admin = st.session_state.role == "admin"
         
+        # Admin approval interface
+        if is_admin:
+            tab1, tab2, tab3 = st.tabs(["Your Scheduled Uploads", "Pending Approval Requests", "Create New"])
+            
+            with tab1:
+                self._render_user_scheduled_uploads()
+                
+            with tab2:
+                self._render_admin_approval_interface()
+                
+            with tab3:
+                self._render_create_scheduled_upload_form()
+        else:
+            # Regular user interface
+            tab1, tab2 = st.tabs(["Your Scheduled Uploads", "Request New Upload"])
+            
+            with tab1:
+                self._render_user_scheduled_uploads()
+                
+            with tab2:
+                st.info("Scheduled uploads require admin approval. Complete the form below to submit a request.")
+                self._render_create_scheduled_upload_form()
+        
+    def _render_user_scheduled_uploads(self):
+        """Display interface for managing a user's scheduled uploads."""
         # Display existing scheduled uploads
         st.write("Current Scheduled Uploads:")
         scheduled_uploads = self.get_scheduled_uploads()
         
         if scheduled_uploads:
-            scheduled_df = pd.DataFrame(scheduled_uploads)
-            st.dataframe(scheduled_df)
+            # Add status labels for clarity
+            for upload in scheduled_uploads:
+                if not upload["is_approved"]:
+                    upload["status"] = "Pending Approval"
+                elif not upload["is_active"]:
+                    upload["status"] = "Inactive"
+                else:
+                    upload["status"] = "Active"
+                    
+            # Create a display dataframe without credentials for security
+            display_columns = ["id", "source_type", "table_name", "frequency", "next_run", 
+                               "last_run", "status", "created_at"]
+            display_df = pd.DataFrame([{k: upload[k] for k in display_columns if k in upload} 
+                                      for upload in scheduled_uploads])
             
-            # Allow disabling/enabling scheduled uploads
-            st.subheader("Manage Scheduled Uploads")
-            selected_upload = st.selectbox(
-                "Select a scheduled upload to manage:",
-                range(len(scheduled_uploads)),
-                format_func=lambda i: f"{scheduled_uploads[i]['table_name']} from {scheduled_uploads[i]['source_type']} (Next run: {scheduled_uploads[i]['next_run']})"
-            )
+            st.dataframe(display_df)
             
-            upload_id = scheduled_uploads[selected_upload]['id']
-            is_active = scheduled_uploads[selected_upload]['is_active']
-            
-            if is_active:
-                if st.button(f"Disable Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
-                    self.toggle_scheduled_upload(upload_id, False)
-                    st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been disabled.")
+            # Only show management interface if there are approved uploads
+            if len(scheduled_uploads) > 0:
+                # Allow disabling/enabling scheduled uploads
+                st.subheader("Manage Scheduled Uploads")
+                selected_upload = st.selectbox(
+                    "Select a scheduled upload to manage:",
+                    range(len(scheduled_uploads)),
+                    format_func=lambda i: f"{scheduled_uploads[i]['table_name']} from {scheduled_uploads[i]['source_type']} (Status: {scheduled_uploads[i]['status']})"
+                )
+                
+                upload_id = scheduled_uploads[selected_upload]['id']
+                is_active = scheduled_uploads[selected_upload]['is_active']
+                is_approved = scheduled_uploads[selected_upload]['is_approved']
+                
+                if is_approved:
+                    if is_active:
+                        if st.button(f"Disable Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
+                            self.toggle_scheduled_upload(upload_id, False)
+                            st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been disabled.")
+                            st.rerun()
+                    else:
+                        if st.button(f"Enable Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
+                            self.toggle_scheduled_upload(upload_id, True)
+                            st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been enabled.")
+                            st.rerun()
+                else:
+                    st.warning("This upload is pending admin approval and cannot be modified yet.")
+                
+                if st.button(f"Delete Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
+                    self.delete_scheduled_upload(upload_id)
+                    st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been deleted.")
                     st.rerun()
-            else:
-                if st.button(f"Enable Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
-                    self.toggle_scheduled_upload(upload_id, True)
-                    st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been enabled.")
-                    st.rerun()
-            
-            if st.button(f"Delete Schedule for {scheduled_uploads[selected_upload]['table_name']}"):
-                self.delete_scheduled_upload(upload_id)
-                st.success(f"Scheduled upload for {scheduled_uploads[selected_upload]['table_name']} has been deleted.")
-                st.rerun()
+        else:
+            st.info("You don't have any scheduled uploads. You can create a new one using the form.")
         
+    def _render_admin_approval_interface(self):
+        """Display interface for admin approval of scheduled uploads."""
+        # Only accessible by admins
+        if st.session_state.role != "admin":
+            return
+            
+        # Get all pending upload requests
+        pending_requests = self.get_pending_upload_requests()
+        
+        if pending_requests:
+            st.subheader("Pending Approval Requests")
+            
+            for i, request in enumerate(pending_requests):
+                with st.expander(f"Request #{i+1}: {request['table_name']} by {request['username']}"):
+                    st.write(f"**Source Type:** {request['source_type']}")
+                    st.write(f"**Source Path:** {request['source_path']}")
+                    st.write(f"**Frequency:** {request['frequency']}")
+                    st.write(f"**Requested Start:** {request['next_run']}")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if st.button(f"Approve", key=f"approve_{request['id']}"):
+                            success, message = self.approve_upload_request(request['id'])
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    
+                    with col2:
+                        reason = st.text_input("Reason for declining (optional):", key=f"reason_{request['id']}")
+                        if st.button(f"Decline", key=f"decline_{request['id']}"):
+                            success, message = self.decline_upload_request(request['id'], reason)
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+        else:
+            st.info("No pending approval requests.")
+                
+    def _render_create_scheduled_upload_form(self):
+        """Display form for creating/requesting new scheduled uploads."""
         # Form to create new scheduled upload
         st.subheader("Create New Scheduled Upload")
+        
+        is_admin = st.session_state.role == "admin"
+        button_text = "Create Schedule" if is_admin else "Submit Request"
         
         with st.form("new_schedule_form"):
             source_type = st.selectbox(
@@ -238,21 +382,23 @@ class UploadManager:
             start_date = st.date_input("Start Date:")
             start_time = st.time_input("Start Time:")
             
-            submit_button = st.form_submit_button("Create Schedule")
+            submit_button = st.form_submit_button(button_text)
             
             if submit_button:
                 # Combine date and time to get next run timestamp
                 next_run = datetime.combine(start_date, start_time)
                 
                 # Create new scheduled upload
-                success = self.create_scheduled_upload(
+                success, message = self.create_scheduled_upload(
                     source_type, source_path, table_name, frequency,
                     next_run.strftime("%Y-%m-%d %H:%M:%S"), credentials
                 )
                 
                 if success:
-                    st.success(f"Scheduled upload created successfully. Next run: {next_run}")
+                    st.success(message)
                     st.rerun()
+                else:
+                    st.error(message)
     
     def render_upload_history(self):
         """Display the history of data uploads."""
@@ -289,11 +435,23 @@ class UploadManager:
             st.error(f"Error recording upload history: {e}")
     
     def get_upload_history(self):
-        """Get the upload history for the current user."""
+        """Get the upload history based on user role."""
         try:
-            self.cursor.execute(
-                "SELECT username, file_name, table_name, rows_count, timestamp FROM upload_history ORDER BY timestamp DESC LIMIT 100"
-            )
+            # Check if the user is admin - if so, show all uploads
+            is_admin = st.session_state.role == "admin"
+            
+            if is_admin:
+                # Admin sees all uploads
+                self.cursor.execute(
+                    "SELECT username, file_name, table_name, rows_count, timestamp FROM upload_history ORDER BY timestamp DESC LIMIT 100"
+                )
+            else:
+                # Regular users only see their own uploads
+                self.cursor.execute(
+                    "SELECT username, file_name, table_name, rows_count, timestamp FROM upload_history WHERE username = ? ORDER BY timestamp DESC LIMIT 100",
+                    (st.session_state.username,)
+                )
+                
             history = self.cursor.fetchall()
             
             # Format as a list of dictionaries
@@ -312,27 +470,68 @@ class UploadManager:
             return []
     
     def create_scheduled_upload(self, source_type, source_path, table_name, frequency, next_run, credentials):
-        """Create a new scheduled upload task."""
+        """Create a new scheduled upload task or request approval if current user is not an admin."""
         try:
-            self.cursor.execute(
-                """
-                INSERT INTO scheduled_uploads 
-                (username, source_type, source_path, table_name, frequency, next_run, credentials) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (st.session_state.username, source_type, source_path, table_name, frequency, next_run, credentials)
-            )
-            self.conn.commit()
+            # Check if user is admin - admins can create scheduled tasks directly
+            is_admin = st.session_state.role == "admin"
             
-            # Register the task with the scheduler
-            from scheduler_manager import SchedulerManager
-            scheduler = SchedulerManager(self.conn)
-            scheduler.register_task(source_type, source_path, table_name, frequency, next_run, credentials)
-            
-            return True
+            if is_admin:
+                # Admin directly creates a scheduled upload
+                self.cursor.execute(
+                    """
+                    INSERT INTO scheduled_uploads 
+                    (username, source_type, source_path, table_name, frequency, next_run, credentials, is_approved) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (st.session_state.username, source_type, source_path, table_name, frequency, next_run, credentials, 1)
+                )
+                self.conn.commit()
+                
+                # Register the task with the scheduler (since it's pre-approved)
+                from scheduler_manager import SchedulerManager
+                scheduler = SchedulerManager(self.conn)
+                scheduler.register_task(source_type, source_path, table_name, frequency, next_run, credentials)
+                
+                return True, "Scheduled upload created successfully"
+            else:
+                # Regular user submits an approval request
+                # First, check if there's a pending request for the same table
+                self.cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM scheduled_uploads 
+                    WHERE username = ? AND table_name = ? AND is_approved = 0
+                    """,
+                    (st.session_state.username, table_name)
+                )
+                
+                count = self.cursor.fetchone()[0]
+                if count > 0:
+                    return False, "You already have a pending request for this table. Please wait for admin approval."
+                
+                # Create a new pending request
+                self.cursor.execute(
+                    """
+                    INSERT INTO scheduled_uploads 
+                    (username, source_type, source_path, table_name, frequency, next_run, credentials, is_approved, is_active) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (st.session_state.username, source_type, source_path, table_name, frequency, next_run, credentials, 0, 0)
+                )
+                self.conn.commit()
+                
+                # Notify admin of the new request
+                from notification_manager import NotificationManager
+                NotificationManager.add_notification({
+                    "type": "approval_request",
+                    "message": f"User {st.session_state.username} requested approval for scheduled upload of table {table_name}",
+                    "timestamp": time.time(),
+                    "username": "admin"  # This ensures admin sees the notification
+                })
+                
+                return True, "Your scheduled upload request has been submitted for admin approval"
         except Exception as e:
-            st.error(f"Error creating scheduled upload: {e}")
-            return False
+            st.error(f"Error creating scheduled upload request: {e}")
+            return False, f"Error: {str(e)}"
     
     def get_scheduled_uploads(self):
         """Get all scheduled uploads for the current user."""
@@ -340,7 +539,7 @@ class UploadManager:
             self.cursor.execute(
                 """
                 SELECT id, source_type, source_path, table_name, frequency, 
-                       next_run, is_active, last_run, created_at 
+                       next_run, is_active, last_run, created_at, is_approved 
                 FROM scheduled_uploads 
                 WHERE username = ?
                 ORDER BY next_run
@@ -360,7 +559,8 @@ class UploadManager:
                     "next_run": row[5],
                     "is_active": bool(row[6]),
                     "last_run": row[7] if row[7] else "Never",
-                    "created_at": row[8]
+                    "created_at": row[8],
+                    "is_approved": bool(row[9]) if row[9] is not None else True  # Default to True for backward compatibility
                 }
                 for row in uploads
             ]
@@ -393,3 +593,141 @@ class UploadManager:
         except Exception as e:
             st.error(f"Error deleting scheduled upload: {e}")
             return False
+            
+    def get_pending_upload_requests(self):
+        """Get all pending upload requests for admin approval."""
+        # Only accessible by admins
+        if st.session_state.role != "admin":
+            return []
+            
+        try:
+            self.cursor.execute(
+                """
+                SELECT id, username, source_type, source_path, table_name, frequency, next_run
+                FROM scheduled_uploads 
+                WHERE is_approved = 0
+                ORDER BY created_at DESC
+                """
+            )
+            requests = self.cursor.fetchall()
+            
+            # Format as a list of dictionaries
+            return [
+                {
+                    "id": row[0],
+                    "username": row[1],
+                    "source_type": row[2],
+                    "source_path": row[3],
+                    "table_name": row[4],
+                    "frequency": row[5],
+                    "next_run": row[6]
+                }
+                for row in requests
+            ]
+        except Exception as e:
+            st.error(f"Error retrieving pending upload requests: {e}")
+            return []
+            
+    def approve_upload_request(self, request_id):
+        """Approve a scheduled upload request."""
+        # Only accessible by admins
+        if st.session_state.role != "admin":
+            return False, "You don't have permission to approve upload requests"
+            
+        try:
+            # Get request details
+            self.cursor.execute(
+                """
+                SELECT username, source_type, source_path, table_name, frequency, next_run, credentials
+                FROM scheduled_uploads 
+                WHERE id = ?
+                """,
+                (request_id,)
+            )
+            request = self.cursor.fetchone()
+            
+            if not request:
+                return False, "Request not found"
+                
+            username, source_type, source_path, table_name, frequency, next_run, credentials = request
+            
+            # Update request status
+            self.cursor.execute(
+                """
+                UPDATE scheduled_uploads
+                SET is_approved = 1, is_active = 1
+                WHERE id = ?
+                """,
+                (request_id,)
+            )
+            self.conn.commit()
+            
+            # Register the task with the scheduler
+            from scheduler_manager import SchedulerManager
+            scheduler = SchedulerManager(self.conn)
+            scheduler.register_task(source_type, source_path, table_name, frequency, next_run, credentials)
+            
+            # Send notification to the user
+            from notification_manager import NotificationManager
+            NotificationManager.add_notification({
+                "type": "approval_approved",
+                "message": f"Your scheduled upload request for table {table_name} has been approved",
+                "timestamp": time.time(),
+                "username": username
+            })
+            
+            return True, f"Request approved. User {username} has been notified."
+        except Exception as e:
+            st.error(f"Error approving upload request: {e}")
+            return False, f"Error: {str(e)}"
+            
+    def decline_upload_request(self, request_id, reason=""):
+        """Decline a scheduled upload request."""
+        # Only accessible by admins
+        if st.session_state.role != "admin":
+            return False, "You don't have permission to decline upload requests"
+            
+        try:
+            # Get request details
+            self.cursor.execute(
+                """
+                SELECT username, table_name
+                FROM scheduled_uploads 
+                WHERE id = ?
+                """,
+                (request_id,)
+            )
+            request = self.cursor.fetchone()
+            
+            if not request:
+                return False, "Request not found"
+                
+            username, table_name = request
+            
+            # Delete the request
+            self.cursor.execute(
+                """
+                DELETE FROM scheduled_uploads
+                WHERE id = ?
+                """,
+                (request_id,)
+            )
+            self.conn.commit()
+            
+            # Send notification to the user
+            from notification_manager import NotificationManager
+            decline_message = f"Your scheduled upload request for table {table_name} has been declined"
+            if reason:
+                decline_message += f": {reason}"
+                
+            NotificationManager.add_notification({
+                "type": "approval_declined",
+                "message": decline_message,
+                "timestamp": time.time(),
+                "username": username
+            })
+            
+            return True, f"Request declined. User {username} has been notified."
+        except Exception as e:
+            st.error(f"Error declining upload request: {e}")
+            return False, f"Error: {str(e)}"

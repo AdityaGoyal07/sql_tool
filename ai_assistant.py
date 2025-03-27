@@ -1,8 +1,5 @@
 import streamlit as st
-import pandas as pd
 import os
-import time
-import json
 import re
 import requests
 import sqlite3
@@ -11,7 +8,6 @@ class AIAssistant:
     """AI-powered SQL query assistant that generates SQL from natural language."""
     
     def __init__(self):
-        
         self.setup_assistant_tables()
         # Initialize memory for conversational context
         if 'ai_assistant_memory' not in st.session_state:
@@ -196,56 +192,95 @@ class AIAssistant:
             for table in tables:
                 # Get column information based on database type
                 if db_type == "postgresql":
-                    query = f"""
-                        SELECT column_name, data_type, 
-                               CASE WHEN is_nullable = 'YES' THEN 'YES' ELSE 'NO' END as nullable,
-                               CASE WHEN column_default IS NOT NULL THEN column_default ELSE '' END as default_value,
-                               CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END as key_type,
-                               '' as extra
-                        FROM information_schema.columns c
-                        LEFT JOIN (
-                            SELECT kcu.column_name
-                            FROM information_schema.table_constraints tc
-                            JOIN information_schema.key_column_usage kcu
-                              ON tc.constraint_name = kcu.constraint_name
-                             AND tc.table_name = kcu.table_name
-                            WHERE tc.constraint_type = 'PRIMARY KEY'
-                              AND tc.table_name = '{table}'
-                        ) pk ON c.column_name = pk.column_name
-                        WHERE c.table_name = '{table}'
-                    """
-                    cursor.execute(query)
-                    columns = cursor.fetchall()
-                    
-                    # Format column information
-                    schema_info[table] = [
-                        {
-                            "name": column[0],
-                            "type": column[1],
-                            "nullable": column[2] == "YES",
-                            "key": column[4],
-                            "default": column[3],
-                            "extra": column[5]
-                        }
-                        for column in columns
-                    ]
+                    try:
+                        # Modified PostgreSQL schema query with safer syntax
+                        query = f"""
+                            SELECT 
+                                column_name, 
+                                data_type, 
+                                CASE WHEN is_nullable = 'YES' THEN 'YES' ELSE 'NO' END as nullable,
+                                CASE WHEN column_default IS NOT NULL THEN column_default ELSE '' END as default_value,
+                                CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END as key_type,
+                                '' as extra
+                            FROM information_schema.columns c
+                            LEFT JOIN (
+                                SELECT kcu.column_name
+                                FROM information_schema.table_constraints tc
+                                JOIN information_schema.key_column_usage kcu
+                                  ON tc.constraint_name = kcu.constraint_name
+                                 AND tc.table_name = kcu.table_name
+                                WHERE tc.constraint_type = 'PRIMARY KEY'
+                                  AND tc.table_name = %s
+                            ) pk ON c.column_name = pk.column_name
+                            WHERE c.table_name = %s
+                        """
+                        # Use parameters instead of string interpolation for better security
+                        cursor.execute(query, (table, table))
+                        columns = cursor.fetchall()
+                        
+                        # If no columns found, try with case-insensitive search
+                        if not columns:
+                            st.warning(f"No columns found for table '{table}' using exact match. Trying case-insensitive search...")
+                            # Using ilike for case-insensitive comparison in PostgreSQL
+                            query = f"""
+                                SELECT 
+                                    c.column_name, 
+                                    c.data_type, 
+                                    CASE WHEN c.is_nullable = 'YES' THEN 'YES' ELSE 'NO' END as nullable,
+                                    CASE WHEN c.column_default IS NOT NULL THEN c.column_default ELSE '' END as default_value,
+                                    CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END as key_type,
+                                    '' as extra
+                                FROM information_schema.columns c
+                                LEFT JOIN (
+                                    SELECT kcu.column_name, kcu.table_name
+                                    FROM information_schema.table_constraints tc
+                                    JOIN information_schema.key_column_usage kcu
+                                      ON tc.constraint_name = kcu.constraint_name
+                                     AND tc.table_name = kcu.table_name
+                                    WHERE tc.constraint_type = 'PRIMARY KEY'
+                                ) pk ON c.column_name = pk.column_name AND c.table_name = pk.table_name
+                                WHERE c.table_name ILIKE %s
+                            """
+                            cursor.execute(query, (f"%{table}%",))
+                            columns = cursor.fetchall()
+                            
+                        # Format column information
+                        schema_info[table] = [
+                            {
+                                "name": column[0],
+                                "type": column[1],
+                                "nullable": column[2] == "YES",
+                                "key": column[4],
+                                "default": column[3],
+                                "extra": column[5]
+                            }
+                            for column in columns
+                        ]
+                    except Exception as e:
+                        st.error(f"Error fetching schema for PostgreSQL table {table}: {e}")
+                        # Create an empty schema entry for this table to avoid errors
+                        schema_info[table] = []
                 else:
-                    # Original MySQL approach
-                    cursor.execute(f"DESCRIBE `{table}`")
-                    columns = cursor.fetchall()
-                    
-                    # Format column information
-                    schema_info[table] = [
-                        {
-                            "name": column[0],
-                            "type": column[1],
-                            "nullable": column[2] == "YES",
-                            "key": column[3],
-                            "default": column[4],
-                            "extra": column[5]
-                        }
-                        for column in columns
-                    ]
+                    try:
+                        # Original MySQL approach
+                        cursor.execute(f"DESCRIBE `{table}`")
+                        columns = cursor.fetchall()
+                        
+                        # Format column information
+                        schema_info[table] = [
+                            {
+                                "name": column[0],
+                                "type": column[1],
+                                "nullable": column[2] == "YES",
+                                "key": column[3],
+                                "default": column[4],
+                                "extra": column[5]
+                            }
+                            for column in columns
+                        ]
+                    except Exception as e:
+                        st.error(f"Error fetching schema for MySQL table {table}: {e}")
+                        schema_info[table] = []
                 
                 # Get a sample of data for better context
                 try:

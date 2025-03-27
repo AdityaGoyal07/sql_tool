@@ -1,9 +1,4 @@
 import streamlit as st
-import pandas as pd
-import json
-import time
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
-from st_aggrid.shared import GridUpdateMode
 
 class QueryBuilder:
     """Provides a drag-and-drop interface for building SQL queries visually."""
@@ -17,16 +12,23 @@ class QueryBuilder:
             st.error("No database connection available. Please connect to a database first.")
             return
         
-        # Get available tables
-        tables = self._get_tables(db_connection)
+        # Create tabs for Query Builder and Saved Queries
+        builder_tab, saved_queries_tab = st.tabs(["Query Builder", "Saved Queries"])
         
-        if not tables:
-            st.warning("No tables found in the database. Please upload data first.")
-            return
+        with builder_tab:
+            # Get available tables
+            tables = self._get_tables(db_connection)
+            
+            if not tables:
+                st.warning("No tables found in the database. Please upload data first.")
+                return
+            
+            # Select tables for the query
+            st.subheader("1. Select Tables")
+            selected_tables = st.multiselect("Choose tables for your query:", tables)
         
-        # Select tables for the query
-        st.subheader("1. Select Tables")
-        selected_tables = st.multiselect("Choose tables for your query:", tables)
+        with saved_queries_tab:
+            self._display_saved_queries(db_connection)
         
         if not selected_tables:
             st.info("Select at least one table to build a query.")
@@ -424,6 +426,39 @@ class QueryBuilder:
             query_manager.execute_and_display_query(db_connection, query)
         except Exception as e:
             st.error(f"Error executing query: {e}")
+    
+    def _display_saved_queries(self, db_connection):
+        """Display saved queries from the query builder."""
+        try:
+            # Get saved queries from the database
+            from query_manager import QueryManager
+            import sqlite3
+            
+            query_manager = QueryManager(sqlite3.connect("sql_gui.db"))
+            saved_queries = query_manager.load_saved_queries()
+            
+            if saved_queries:
+                st.subheader("Your Saved Queries")
+                
+                # Display queries in a nice format with options to use them
+                for i, query in enumerate(saved_queries):
+                    with st.expander(f"{query['query_name']} - {query['created_at']}"):
+                        st.code(query['query'], language="sql")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Execute", key=f"exec_saved_{i}"):
+                                self._execute_query(db_connection, query['query'])
+                        
+                        with col2:
+                            if st.button("Load in Builder", key=f"load_saved_{i}"):
+                                # Store in session state to be used in the builder
+                                st.session_state.loaded_query = query['query']
+                                st.success(f"Query '{query['query_name']}' loaded for editing")
+            else:
+                st.info("No saved queries found. Create queries using the visual builder and save them.")
+        except Exception as e:
+            st.error(f"Error loading saved queries: {e}")
     
     def _save_query(self, query_name, query):
         """Save the generated query for future use."""

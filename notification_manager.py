@@ -141,19 +141,36 @@ class NotificationManager:
             self.render_notification_settings()
     
     def render_notification_history(self):
-        """Display the notification history."""
+        """Display the notification history based on user role."""
         st.subheader("Notification History")
         
-        # Fetch notification history from database
+        # Check if the user is admin - if so, show all notifications
+        is_admin = st.session_state.role == "admin"
+        
+        # Fetch notification history from database based on role
         try:
-            self.cursor.execute(
-                """
-                SELECT type, message, timestamp, is_read 
-                FROM notifications 
-                ORDER BY timestamp DESC
-                LIMIT 100
-                """
-            )
+            if is_admin:
+                # Admin sees all notifications
+                self.cursor.execute(
+                    """
+                    SELECT type, message, timestamp, is_read, username
+                    FROM notifications 
+                    ORDER BY timestamp DESC
+                    LIMIT 100
+                    """
+                )
+            else:
+                # Regular users only see their own notifications
+                self.cursor.execute(
+                    """
+                    SELECT type, message, timestamp, is_read, username
+                    FROM notifications 
+                    WHERE username = ? OR username = 'system'
+                    ORDER BY timestamp DESC
+                    LIMIT 100
+                    """,
+                    (st.session_state.username,)
+                )
             
             notifications = self.cursor.fetchall()
             
@@ -164,7 +181,7 @@ class NotificationManager:
             # Create DataFrame for display
             notifications_df = pd.DataFrame(
                 notifications,
-                columns=["Type", "Message", "Timestamp", "Read"]
+                columns=["Type", "Message", "Timestamp", "Read", "Username"]
             )
             
             # Format timestamp
@@ -290,11 +307,23 @@ class NotificationManager:
             return False
     
     def mark_all_notifications_read(self):
-        """Mark all notifications as read."""
+        """Mark all notifications as read for the current user, or all notifications for admin."""
         try:
-            self.cursor.execute(
-                "UPDATE notifications SET is_read = 1"
-            )
+            # Check if the user is admin
+            is_admin = st.session_state.role == "admin"
+            
+            if is_admin:
+                # Admin can mark all notifications as read
+                self.cursor.execute(
+                    "UPDATE notifications SET is_read = 1"
+                )
+            else:
+                # Regular users can only mark their own notifications as read
+                self.cursor.execute(
+                    "UPDATE notifications SET is_read = 1 WHERE username = ? OR username = 'system'",
+                    (st.session_state.username,)
+                )
+            
             self.conn.commit()
             return True
         except Exception as e:

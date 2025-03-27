@@ -1,11 +1,8 @@
+import re
 import streamlit as st
 import sqlite3
-import os
 import time
 import hashlib
-import pandas as pd
-import json
-from datetime import datetime, timedelta
 
 def create_sqlite_connection(db_name="sql_gui.db"):
     """Create and return a connection to the SQLite database."""
@@ -182,4 +179,3 @@ def parse_error_message(error_msg):
     # Default fallback message
     return f"Database error: {error_msg}"
 
-import re

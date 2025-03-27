@@ -2,7 +2,6 @@ import streamlit as st
 import time
 import threading
 import sqlite3
-import json
 import pandas as pd
 from datetime import datetime
 import os
@@ -404,41 +403,19 @@ class BackgroundProcessor:
     
     def _send_completion_email(self, task_id, email, execution_time, row_count):
         """Send an email notification for a completed task."""
-        subject = f"SQL Query GUI - Background Task #{task_id} Completed"
-        
-        body = f"""
-        <html>
-        <body>
-            <h2>Background Task Completed</h2>
-            <p>Your background query task has been completed successfully.</p>
-            <ul>
-                <li><strong>Task ID:</strong> {task_id}</li>
-                <li><strong>Execution Time:</strong> {execution_time:.2f} seconds</li>
-                <li><strong>Results:</strong> {row_count} rows</li>
-            </ul>
-            <p>You can view the complete results in the SQL Query GUI application.</p>
-        </body>
-        </html>
-        """
-        
-        self.email_service.send_email(email, subject, body)
+        # Use EmailService to send notification
+        try:
+            # Get notification settings
+            self.email_service.send_query_completion_notification(email, task_id, execution_time, row_count)
+            print(f"Email notification sent to {email} for task {task_id}")
+        except Exception as e:
+            print(f"Error sending email notification: {e}")
     
     def _send_failure_email(self, task_id, email, error_message):
         """Send an email notification for a failed task."""
-        subject = f"SQL Query GUI - Background Task #{task_id} Failed"
-        
-        body = f"""
-        <html>
-        <body>
-            <h2>Background Task Failed</h2>
-            <p>Your background query task has failed to complete.</p>
-            <ul>
-                <li><strong>Task ID:</strong> {task_id}</li>
-                <li><strong>Error:</strong> {error_message}</li>
-            </ul>
-            <p>Please check your query and try again.</p>
-        </body>
-        </html>
-        """
-        
-        self.email_service.send_email(email, subject, body)
+        try:
+            # Use EmailService to send notification
+            self.email_service.send_query_failure_notification(email, task_id, error_message)
+            print(f"Failure email notification sent to {email} for task {task_id}")
+        except Exception as e:
+            print(f"Error sending failure email notification: {e}")

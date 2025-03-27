@@ -1,10 +1,5 @@
 import streamlit as st
 import time
-import os
-from streamlit_authenticator import Authenticate
-import yaml
-from yaml.loader import SafeLoader
-import json
 
 # Import all the managers
 from db_manager import DatabaseManager

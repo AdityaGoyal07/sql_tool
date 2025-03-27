@@ -145,6 +145,68 @@ class EmailService:
         
         success = self.send_email(recipient_email, subject, body)
         return success
+        
+    def send_admin_log_report(self, admin_email, log_entries, report_type="daily"):
+        """Send a log report email to admin with important system events.
+        
+        Args:
+            admin_email: The admin's email address
+            log_entries: List of log entries (dict with type, message, timestamp, username)
+            report_type: Type of report ("daily", "weekly", or "custom")
+        """
+        subject = f"SQL Query GUI - Admin {report_type.capitalize()} Log Report"
+        
+        # Group logs by type
+        log_types = {}
+        for entry in log_entries:
+            log_type = entry.get("type", "general")
+            if log_type not in log_types:
+                log_types[log_type] = []
+            log_types[log_type].append(entry)
+        
+        # Generate HTML content
+        body = f"""
+        <html>
+        <body>
+            <h2>Admin {report_type.capitalize()} Log Report</h2>
+            <p>This report contains important system events that may require your attention.</p>
+        """
+        
+        # Add log sections by type
+        for log_type, entries in log_types.items():
+            formatted_type = log_type.replace("_", " ").title()
+            body += f"""
+            <h3>{formatted_type} Logs ({len(entries)})</h3>
+            <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
+                <tr style="background-color: #f2f2f2;">
+                    <th>Timestamp</th>
+                    <th>User</th>
+                    <th>Message</th>
+                </tr>
+            """
+            
+            for entry in entries:
+                timestamp = entry.get("timestamp", "")
+                username = entry.get("username", "system")
+                message = entry.get("message", "")
+                
+                body += f"""
+                <tr>
+                    <td>{timestamp}</td>
+                    <td>{username}</td>
+                    <td>{message}</td>
+                </tr>
+                """
+            
+            body += "</table><br>"
+        
+        body += """
+            <p>This is an automated report. Please do not reply to this email.</p>
+        </body>
+        </html>
+        """
+        
+        return self.send_email(admin_email, subject, body)
     
     def render_email_configuration_interface(self):
         """Display the email configuration interface."""
@@ -196,6 +258,47 @@ class EmailService:
         background_tasks = st.checkbox("Send email notifications for background tasks", value=True)
         scheduled_uploads = st.checkbox("Send email notifications for scheduled uploads", value=True)
         query_errors = st.checkbox("Send email notifications for query errors", value=True)
+        
+        # Admin notification options (only visible to admins)
+        if st.session_state.role == "admin":
+            st.subheader("Admin Notifications")
+            admin_email = st.text_input("Admin Email for Reports:", value=self.sender_email)
+            
+            st.write("Log Report Schedule")
+            report_frequency = st.selectbox(
+                "Send admin log reports:", 
+                ["Never", "Daily", "Weekly", "Monthly"],
+                index=0
+            )
+            
+            include_user_actions = st.checkbox("Include user actions in admin reports", value=True)
+            include_system_events = st.checkbox("Include system events in admin reports", value=True)
+            include_errors = st.checkbox("Include errors in admin reports", value=True)
+            
+            # Option to generate a test admin report
+            if st.button("Send Test Admin Report"):
+                if admin_email:
+                    with st.spinner("Generating and sending admin report..."):
+                        # Generate sample log entries for the test report
+                        sample_logs = [
+                            {"type": "data_upload", "message": "Table sample_data was created with 1000 rows by user1", 
+                             "timestamp": "2025-03-27 08:15:23", "username": "user1"},
+                            {"type": "system_event", "message": "Database backup completed successfully", 
+                             "timestamp": "2025-03-27 09:30:45", "username": "system"},
+                            {"type": "error", "message": "Query execution failed: syntax error at line 3", 
+                             "timestamp": "2025-03-27 10:45:12", "username": "user2"},
+                            {"type": "user_action", "message": "User requested scheduled upload approval", 
+                             "timestamp": "2025-03-27 11:20:33", "username": "user3"}
+                        ]
+                        
+                        success = self.send_admin_log_report(admin_email, sample_logs, "test")
+                        
+                        if success:
+                            st.success(f"Test admin report sent successfully to {admin_email}!")
+                        else:
+                            st.error("Failed to send test admin report. Please check your configuration.")
+                else:
+                    st.warning("Please enter an admin email address.")
         
         if st.button("Save Notification Settings"):
             # In a real application, these would be saved in the database

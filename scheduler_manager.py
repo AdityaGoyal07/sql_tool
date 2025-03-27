@@ -1,6 +1,5 @@
 import streamlit as st
 import time
-import sqlite3
 import pandas as pd
 import json
 from datetime import datetime, timedelta
@@ -10,7 +9,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 import threading
-import ftplib
 
 class SchedulerManager:
     """Manages scheduled data uploads and tasks."""

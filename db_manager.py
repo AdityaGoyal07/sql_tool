@@ -29,13 +29,15 @@ class DatabaseManager:
         """Establish connection to PostgreSQL database."""
         try:
             db = st.secrets["postgres"]
+            st.write("DB CONFIG:", db)  # <--- Add this line for debugging
+            
             conn = psycopg2.connect(
-            host=db["host"],
-            port=db["port"],
-            user=db["user"],
-            password=db["password"],
-            dbname=db["database"]
-        )
+                host=db["host"],
+                port=db["port"],
+                user=db["user"],
+                password=db["password"],
+                dbname=db["database"]
+            )
             return conn
         except psycopg2.Error as err:
             st.error(f"Error connecting to PostgreSQL database: {err}")
@@ -216,12 +218,38 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         try:
-            # Clean column names
+            st.write("Preparing data for storage...")
+            status_placeholder = st.empty()
+            progress_placeholder = st.empty()
+            
+            # Create progress bar
+            progress_bar = progress_placeholder.progress(0)
+            
+            # Display status messages for each step
+            status_placeholder.info("Analyzing data types...")
+            
+            # Clean column names - do this efficiently
             cleaned_columns = [col.strip().replace(" ", "_") for col in data.columns if pd.notna(col)]
+            
+            # Determine appropriate column types based on data content
+            column_types = {}
+            for col in cleaned_columns:
+                if pd.api.types.is_numeric_dtype(data[col]):
+                    if pd.api.types.is_integer_dtype(data[col]):
+                        column_types[col] = "INTEGER"
+                    else:
+                        column_types[col] = "NUMERIC"
+                elif pd.api.types.is_datetime64_any_dtype(data[col]):
+                    column_types[col] = "TIMESTAMP"
+                else:
+                    column_types[col] = "TEXT"
+            
+            progress_bar.progress(0.1)
+            status_placeholder.info("Generating table schema...")
             
             # Create table with appropriate syntax for the database type
             if db_type.lower() == "mysql":
-                columns_with_types = [f"`{col}` TEXT" for col in cleaned_columns]
+                columns_with_types = [f"`{col}` {column_types[col]}" for col in cleaned_columns]
                 create_table_query = f"CREATE TABLE IF NOT EXISTS `{table_name}` ({', '.join(columns_with_types)})"
                 
                 # Clear the table before inserting new data
@@ -231,7 +259,7 @@ class DatabaseManager:
                 insert_query = f"INSERT INTO `{table_name}` ({', '.join([f'`{col}`' for col in cleaned_columns])}) VALUES ({', '.join(['%s'] * len(cleaned_columns))})"
             
             elif db_type.lower() == "postgresql":
-                columns_with_types = [f"\"{col}\" TEXT" for col in cleaned_columns]
+                columns_with_types = [f"\"{col}\" {column_types[col]}" for col in cleaned_columns]
                 create_table_query = f"CREATE TABLE IF NOT EXISTS \"{table_name}\" ({', '.join(columns_with_types)})"
                 
                 # Clear the table before inserting new data
@@ -244,7 +272,7 @@ class DatabaseManager:
                 insert_query = f"INSERT INTO \"{table_name}\" ({columns_str}) VALUES ({placeholders})"
             
             elif db_type.lower() == "sqlite":
-                columns_with_types = [f"\"{col}\" TEXT" for col in cleaned_columns]
+                columns_with_types = [f"\"{col}\" {column_types[col]}" for col in cleaned_columns]
                 create_table_query = f"CREATE TABLE IF NOT EXISTS \"{table_name}\" ({', '.join(columns_with_types)})"
                 
                 # Clear the table before inserting new data
@@ -256,30 +284,65 @@ class DatabaseManager:
                 placeholders = ", ".join(['?' for _ in range(len(cleaned_columns))])
                 insert_query = f"INSERT INTO \"{table_name}\" ({columns_str}) VALUES ({placeholders})"
             
+            progress_bar.progress(0.2)
+            status_placeholder.info("Creating table schema...")
+            
             # Execute create table and clear table queries
             cursor.execute(create_table_query)
+            progress_bar.progress(0.3)
+            
+            status_placeholder.info("Clearing existing data...")
             cursor.execute(clear_table_query)
             conn.commit()
+            progress_bar.progress(0.4)
             
-            # Convert data to list of tuples
-            data_tuples = [tuple(row) for row in data.itertuples(index=False)]
+            # Optimize data conversion - this is a performance bottleneck
+            status_placeholder.info("Preparing data for insertion...")
+            
+            # Use more efficient data conversion method - numpy array is much faster
+            import numpy as np
+            if len(data) > 0:
+                # Convert to numpy array and then to list of tuples for maximum speed
+                # This is significantly faster for large datasets
+                try:
+                    # Try the fast path first
+                    values = data.to_numpy()
+                    data_tuples = [tuple(row) for row in values]
+                except:
+                    # Fall back to slower itertuples method if needed
+                    data_tuples = [tuple(row) for row in data.itertuples(index=False)]
+            else:
+                data_tuples = []
+            
+            progress_bar.progress(0.5)
+            status_placeholder.info("Inserting data in chunks...")
             
             # Insert data in chunks with progress bar
-            chunk_size = 1000
+            # Adjust chunk size based on data size
             total_rows = len(data)
-            progress_bar = st.progress(0)
+            if total_rows > 100000:
+                chunk_size = 5000  # Larger chunks for big datasets
+            elif total_rows > 10000:
+                chunk_size = 2000  # Medium chunks for medium datasets
+            else:
+                chunk_size = 1000  # Smaller chunks for small datasets
             
+            # Insert the data in chunks
             for i in range(0, total_rows, chunk_size):
                 chunk = data_tuples[i : i + chunk_size]
                 cursor.executemany(insert_query, chunk)
                 conn.commit()
-                progress_bar.progress((i + len(chunk)) / total_rows)
+                progress_value = 0.5 + 0.5 * ((i + len(chunk)) / total_rows)
+                progress_bar.progress(min(progress_value, 1.0))
+                status_placeholder.info(f"Inserting rows {i+1} to {min(i+len(chunk), total_rows)} of {total_rows}...")
             
-            progress_bar.empty()
-            st.success(f"Successfully inserted {total_rows} rows into {table_name}.")
+            # Clear the progress and status displays
+            time.sleep(0.5)  # Small pause to show completion
+            progress_placeholder.empty()
+            status_placeholder.success(f"Successfully inserted {total_rows} rows into {table_name}.")
             
             # Record this event in notifications
-            if st.session_state.authenticated:
+            if hasattr(st.session_state, 'authenticated') and st.session_state.authenticated:
                 from notification_manager import NotificationManager
                 notification = {
                     "type": "data_upload",
