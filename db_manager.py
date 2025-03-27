@@ -28,13 +28,14 @@ class DatabaseManager:
     def connect_to_postgres_db(self):
         """Establish connection to PostgreSQL database."""
         try:
+            db = st.secrets["postgres"]
             conn = psycopg2.connect(
-                host=os.getenv("PGHOST", "localhost"),
-                user=os.getenv("PGUSER", "postgres"),
-                password=os.getenv("PGPASSWORD", "postgres"),
-                dbname=os.getenv("PGDATABASE", "postgres"),
-                port=os.getenv("PGPORT", "5432")
-            )
+            host=db["host"],
+            port=db["port"],
+            user=db["user"],
+            password=db["password"],
+            dbname=db["database"]
+        )
             return conn
         except psycopg2.Error as err:
             st.error(f"Error connecting to PostgreSQL database: {err}")
