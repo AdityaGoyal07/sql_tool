@@ -22,6 +22,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Create SQLite connection for storing user data, query history, etc.
+sqlite_conn = create_sqlite_connection()
+
+# Initialize auth manager
+auth_manager = AuthManager(sqlite_conn)
+
 # Initialize session state variables if they don't exist
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -29,6 +35,8 @@ if 'username' not in st.session_state:
     st.session_state.username = None
 if 'role' not in st.session_state:
     st.session_state.role = None
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = None
 if 'current_db' not in st.session_state:
     st.session_state.current_db = 'postgresql'  # Default database
 if 'query_history' not in st.session_state:
@@ -44,44 +52,64 @@ if 'current_query_time' not in st.session_state:
 if 'last_query_result' not in st.session_state:
     st.session_state.last_query_result = None
 
-# Create SQLite connection for storing user data, query history, etc.
-sqlite_conn = create_sqlite_connection()
+# Handle session and authentication
+if st.session_state.get('session_id'):
+    username = auth_manager.validate_session(st.session_state['session_id'])
+    if username:
+        # Check if session needs renewal
+        active_session = auth_manager.get_active_session(username)
+        if active_session:
+            st.session_state.session_id = active_session
+        else:
+            st.session_state.session_id = auth_manager.create_session(username)
+        
+        st.session_state.authenticated = True
+        st.session_state.username = username
+        st.session_state.role = auth_manager.get_user_role(username)
+    else:
+        st.session_state.authenticated = False
+        st.session_state.username = None
+        st.session_state.role = None
+        st.session_state.session_id = None
+else:
+    st.session_state.authenticated = False
 
-# Initialize auth manager
-auth_manager = AuthManager(sqlite_conn)
-
-# Handle authentication
+# If not authenticated, show login interface
 if not st.session_state.authenticated:
-    auth_status, username, role = auth_manager.authenticate_user()
-    if auth_status:
+    auth_result, username, role = auth_manager.authenticate_user()
+
+    if auth_result:
+        st.success(f"✅ Welcome, {username}!")
         st.session_state.authenticated = True
         st.session_state.username = username
         st.session_state.role = role
-        st.rerun()
-    elif auth_status == False:
-        st.error('Username/password is incorrect')
-    # Don't show the rest of the app when not authenticated
-    if not st.session_state.authenticated:
-        st.stop()
+        st.session_state.session_id = auth_manager.create_session(username)
+        st.rerun()  # Trigger fresh state after login
+    else:
+        st.stop()  # Stop app execution until user logs in
 
-# Initialize all the managers
-db_manager = DatabaseManager()
-query_manager = QueryManager(sqlite_conn)
-upload_manager = UploadManager(sqlite_conn)
-visualization_manager = VisualizationManager()
-notification_manager = NotificationManager(sqlite_conn)
-scheduler_manager = SchedulerManager(sqlite_conn)
-background_processor = BackgroundProcessor()
-query_builder = QueryBuilder()
-ai_assistant = AIAssistant()
+# Initialize all the other managers (only if authenticated)
+if st.session_state.authenticated:
+    db_manager = DatabaseManager()
+    query_manager = QueryManager(sqlite_conn)
+    upload_manager = UploadManager(sqlite_conn)
+    visualization_manager = VisualizationManager()
+    notification_manager = NotificationManager(sqlite_conn)
+    scheduler_manager = SchedulerManager(sqlite_conn)
+    background_processor = BackgroundProcessor()
+    query_builder = QueryBuilder()
+    ai_assistant = AIAssistant()
 
 # Main app
 def main():
+    if not st.session_state.authenticated:
+        return
+
     st.title("Advanced SQL Query GUI")
     
     with st.sidebar:
-        st.header("User: " + st.session_state.username)
-        st.text("Role: " + st.session_state.role)
+        st.header(f"User: {st.session_state.username}")
+        st.text(f"Role: {st.session_state.role}")
         st.divider()
         
         # Database connection selection
@@ -117,11 +145,12 @@ def main():
                 time.sleep(1)
                 st.rerun()
         
-        # Logout button
+        # Single logout button in sidebar
         st.divider()
         if st.button("Logout"):
             auth_manager.logout()
             st.session_state.authenticated = False
+            st.session_state.session_id = None
             st.rerun()
     
     # Check for notifications

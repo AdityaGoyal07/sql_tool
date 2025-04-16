@@ -35,7 +35,7 @@ class AuthManager:
             username TEXT NOT NULL,
             session_id TEXT UNIQUE NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NOT NULL,
+            expires_at REAL NOT NULL,
             is_active BOOLEAN DEFAULT 1,
             FOREIGN KEY (username) REFERENCES users(username)
         )
@@ -155,15 +155,18 @@ class AuthManager:
         """Create a new session for the authenticated user."""
         session_id = hashlib.sha256(
             f"{username}:{time.time()}".encode()).hexdigest()
-        expires_at = datetime.now().timestamp() + (24 * 60 * 60
-                                                   )  # 24 hours from now
+        
+        # Convert expiration time to datetime object
+        expires_at = datetime.fromtimestamp(
+            datetime.now().timestamp() + (24 * 60 * 60)
+        )
 
         self.cursor.execute(
             "INSERT INTO sessions (username, session_id, expires_at) VALUES (?, ?, ?)",
             (username, session_id, expires_at))
         self.conn.commit()
 
-        # Store session in cookie or session state
+        # Store session in session state
         st.session_state.session_id = session_id
         return session_id
 
@@ -189,6 +192,14 @@ class AuthManager:
 
         return username
 
+    def get_active_session(self, username):
+        """Retrieve the active session for a user"""
+        self.cursor.execute(
+            "SELECT session_id FROM sessions WHERE username = ? AND is_active = 1 AND expires_at > ?",
+            (username, datetime.now().timestamp())
+        )
+        result = self.cursor.fetchone()
+        return result[0] if result else None
     def invalidate_session(self, session_id):
         """Invalidate a user session."""
         self.cursor.execute(

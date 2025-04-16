@@ -7,6 +7,7 @@ from datetime import datetime
 import requests
 import sqlite3
 from db_manager import DatabaseManager
+from st_aggrid import AgGrid,GridOptionsBuilder
 
 class UploadManager:
     """Manages data uploads and scheduled uploads."""
@@ -90,14 +91,24 @@ class UploadManager:
                     
                     # Preview data
                     st.write(f"Preview of {uploaded_file.name}:")
-                    st.dataframe(data.head())
+                    st.dataframe(data , width = 2100)
                     
                     # Show data info
                     st.write("Data Information:")
-                    from io import StringIO
-                    buffer = StringIO()
-                    data.info(buf=buffer)
-                    st.text(buffer.getvalue())
+                    info_df = data.apply(lambda col: pd.Series({
+                        "Non-Null Count": col.notnull().sum(),
+                        "Null Count": col.isnull().sum(),
+                        "Dtype": col.dtype,
+                        "% Missing": round(col.isnull().mean() * 100, 2)
+                    })).T.reset_index().rename(columns={"index": "Column"})
+
+                    # Add index starting from 1
+                    info_df = info_df.reset_index(drop=True)
+                    info_df.index = info_df.index + 1  # Start index at 1
+                    info_df = info_df.rename_axis("S.no").reset_index()  # Add numbered column
+
+                    # Display with styling
+                    st.dataframe(info_df,hide_index= True , width= 650)
                     
                     # Process data
                     st.subheader("Data Processing")
@@ -107,7 +118,8 @@ class UploadManager:
                         "How to handle missing values:",
                         ["Drop rows with any missing values", 
                          "Fill numeric with 0, text with empty string", 
-                         "Fill with mean/mode (where possible)", 
+                         "Fill with mean/mode (where possible)",
+                         "Use KNN imputer", 
                          "Keep as is"],
                         key=f"missing_{table_name}"
                     )
@@ -173,6 +185,53 @@ class UploadManager:
                         # Ensure progress bar reaches 100%
                         progress_bar.progress(1.0)
                         st.info("Filled missing values with mean/mode.")
+                    elif missing_strategy == "Use KNN imputer":
+                        from sklearn.impute import KNNImputer
+                        from sklearn.preprocessing import StandardScaler
+                        # Separate numeric and non-numeric columns
+                        numeric_cols = data.select_dtypes(include=['number']).columns
+                        non_numeric_cols = data.select_dtypes(exclude=['number']).columns
+                        
+                        processed_cols = 0
+                        total_cols = len(numeric_cols) + len(non_numeric_cols)
+                        
+                        # Process numeric columns with KNN
+                        if len(numeric_cols) > 0:
+                            # Scale data before KNN imputation
+                            scaler = StandardScaler()
+                            scaled_data = scaler.fit_transform(data[numeric_cols])
+                            
+                            # Initialize and fit KNN Imputer
+                            imputer = KNNImputer(n_neighbors=5)
+                            imputed_data = imputer.fit_transform(scaled_data)
+                            
+                            # Inverse scaling and update data
+                            data[numeric_cols] = scaler.inverse_transform(imputed_data)
+                            processed_cols += len(numeric_cols)
+                            progress_bar.progress(processed_cols / total_cols)
+                        
+                        # Process non-numeric columns with mode (similar to mean/mode strategy)
+                        if len(non_numeric_cols) > 0:
+                            modes = {}
+                            # Pre-calculate modes
+                            for col in non_numeric_cols:
+                                mode_values = data[col].mode()
+                                modes[col] = mode_values[0] if not mode_values.empty else ""
+                            
+                            # Fill with modes
+                            for col in non_numeric_cols:
+                                data[col] = data[col].fillna(modes[col])
+                                processed_cols += 1
+                                progress_bar.progress(processed_cols / total_cols)
+                        
+                        # Handle completely missing columns
+                        remaining_missing = data.isna().sum().sum()
+                        if remaining_missing > 0:
+                            data = data.dropna(axis=1, how='all')
+                            st.warning(f"Dropped {remaining_missing} columns that were completely missing")
+                        
+                        progress_bar.progress(1.0)
+                        st.info("Performed KNN-based imputation (numeric) + mode imputation (non-numeric)")
                     else:
                         # No processing needed for "Keep as is"
                         progress_bar.progress(1.0)
